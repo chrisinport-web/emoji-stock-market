@@ -1,0 +1,408 @@
+import { ChangeDetectionStrategy, Component, computed, signal, OnInit, OnDestroy, effect } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, onSnapshot, setDoc, getDocs, collection, updateDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+// Global variables for Firebase authentication and app ID
+declare const __app_id: string;
+declare const __firebase_config: string;
+declare const __initial_auth_token: string;
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="min-h-screen flex flex-col items-center justify-start p-4 bg-gradient-to-br from-slate-900 to-gray-950 text-white font-inter">
+      <div class="w-full max-w-4xl p-6 bg-slate-800/80 backdrop-blur-sm rounded-xl shadow-2xl border-2 border-slate-700 mt-8 mb-4">
+        <h1 class="text-4xl sm:text-5xl font-extrabold text-center text-cyan-400 mb-2">Emoji Stock Market</h1>
+        <p class="text-center text-slate-400 font-medium mb-4">Trade emojis with players in real-time!</p>
+        <div class="flex flex-col sm:flex-row justify-between items-center text-sm sm:text-base space-y-2 sm:space-y-0">
+          <div class="bg-slate-700/50 rounded-lg p-2 flex-grow sm:flex-grow-0 w-full sm:w-auto text-center sm:text-left">
+            <span class="text-slate-300">My Balance:</span>
+            <span class="text-yellow-400 font-bold ml-2">{{ myBalance() | number:'1.2-2' }}</span>
+          </div>
+          <div class="bg-slate-700/50 rounded-lg p-2 flex-grow sm:flex-grow-0 w-full sm:w-auto text-center sm:text-right">
+            <span class="text-slate-300">Player ID:</span>
+            <span class="font-mono text-xs text-slate-400 ml-2 break-all">{{ userId() }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-4xl">
+        <!-- Stock Market -->
+        <div class="bg-slate-800/80 backdrop-blur-sm p-6 rounded-xl shadow-2xl border-2 border-slate-700">
+          <h2 class="text-2xl font-bold text-teal-400 mb-4 text-center">Market Prices</h2>
+          <div class="space-y-3">
+            @for (emoji of emojis(); track emoji.id) {
+              <div class="flex justify-between items-center bg-slate-700/50 rounded-lg p-3 shadow-md">
+                <span class="text-3xl">{{ emoji.symbol }}</span>
+                <span class="text-lg font-semibold text-slate-200">{{ emoji.name }}</span>
+                <span class="text-xl font-bold" [ngClass]="{'text-green-400': emoji.priceChange > 0, 'text-red-400': emoji.priceChange < 0, 'text-slate-400': emoji.priceChange === 0}">
+                  {{ emoji.price | number:'1.2-2' }}
+                  <span class="text-sm ml-1" *ngIf="emoji.priceChange !== 0">
+                    <span [innerHTML]="emoji.priceChange > 0 ? '&#9650;' : '&#9660;'"></span>
+                  </span>
+                </span>
+              </div>
+            }
+          </div>
+        </div>
+
+        <!-- Portfolio & Trading -->
+        <div class="bg-slate-800/80 backdrop-blur-sm p-6 rounded-xl shadow-2xl border-2 border-slate-700">
+          <h2 class="text-2xl font-bold text-teal-400 mb-4 text-center">Your Portfolio</h2>
+          <div class="space-y-3 mb-6">
+            @for (item of myPortfolio(); track item.id) {
+              <div class="flex justify-between items-center bg-slate-700/50 rounded-lg p-3 shadow-md">
+                <span class="text-3xl">{{ item.symbol }}</span>
+                <span class="text-lg font-semibold text-slate-200">{{ item.name }}</span>
+                <span class="text-xl font-bold text-cyan-400">Qty: {{ item.quantity }}</span>
+              </div>
+            } @empty {
+              <div class="text-center text-slate-400 italic">No emojis in your portfolio.</div>
+            }
+          </div>
+
+          <h3 class="text-xl font-bold text-teal-400 mb-4 text-center">Trade Emojis</h3>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="col-span-2">
+              <label for="trade-emoji" class="text-slate-300 font-medium mb-1 block">Emoji</label>
+              <select id="trade-emoji" [(ngModel)]="selectedEmoji" class="w-full bg-slate-700 text-white p-3 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+                <option *ngFor="let emoji of emojis()" [ngValue]="emoji.id">{{ emoji.symbol }} - {{ emoji.name }}</option>
+              </select>
+            </div>
+            <div class="col-span-2">
+              <label for="trade-quantity" class="text-slate-300 font-medium mb-1 block">Quantity</label>
+              <input type="number" id="trade-quantity" [(ngModel)]="tradeQuantity" min="1" class="w-full bg-slate-700 text-white p-3 rounded-lg border border-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="1">
+            </div>
+            <button (click)="buyEmoji()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">Buy</button>
+            <button (click)="sellEmoji()" class="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-4 rounded-full shadow-lg transition-transform transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">Sell</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Ad Reward Button -->
+      <button (click)="watchAd()" class="mt-8 bg-purple-600 hover:bg-purple-500 text-white font-bold py-4 px-8 rounded-full shadow-lg transition-transform transform hover:scale-105 active:scale-95">
+        Watch Ad for Reward
+      </button>
+
+      <!-- Message Box for Alerts -->
+      <div *ngIf="messageBox().visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div class="bg-slate-700 p-8 rounded-2xl shadow-xl border-2 border-cyan-400 max-w-sm w-full text-center animate-fade-in">
+          <h3 class="text-2xl font-bold mb-4 text-cyan-400">{{ messageBox().title }}</h3>
+          <p class="text-md mb-6 text-slate-300">{{ messageBox().text }}</p>
+          <button (click)="hideMessage()" class="bg-gray-500 hover:bg-gray-400 text-white font-bold py-2 px-6 rounded-full transition-transform transform hover:scale-105">OK</button>
+        </div>
+      </div>
+    </div>
+  `,
+  styles: [`
+    :host {
+      --tw-bg-from: #1f2937;
+      --tw-bg-to: #111827;
+      background: linear-gradient(135deg, var(--tw-bg-from) 0%, var(--tw-bg-to) 100%);
+      color: #e5e7eb;
+      font-family: 'Inter', sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      width: 100%;
+    }
+    .font-inter {
+      font-family: 'Inter', sans-serif;
+    }
+    .animate-fade-in {
+      animation: fadeIn 0.3s ease-in-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  `],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class App implements OnInit, OnDestroy {
+  // Signals for state management
+  userId = signal<string | null>(null);
+  auth = signal<any>(null);
+  db = signal<any>(null);
+  emojis = signal<any[]>([]);
+  playerData = signal<any | null>(null);
+  selectedEmoji = signal<string | null>(null);
+  tradeQuantity = signal<number>(1);
+  messageBox = signal({
+    visible: false,
+    title: '',
+    text: '',
+  });
+
+  // Computed properties
+  myBalance = computed(() => this.playerData()?.balance || 0);
+  myPortfolio = computed(() => {
+    const portfolio = this.playerData()?.portfolio || {};
+    return Object.keys(portfolio)
+      .filter(emojiId => portfolio[emojiId] > 0)
+      .map(emojiId => {
+        const emoji = this.emojis().find(e => e.id === emojiId);
+        return {
+          id: emojiId,
+          symbol: emoji?.symbol || '?',
+          name: emoji?.name || 'Unknown',
+          quantity: portfolio[emojiId]
+        };
+      });
+  });
+
+  private unsubscribeEmojis: (() => void) | null = null;
+  private unsubscribePlayer: (() => void) | null = null;
+  private priceUpdateInterval: any;
+
+  constructor() {
+    effect(() => {
+      // Set a default selected emoji once the list is available
+      if (this.emojis().length > 0 && !this.selectedEmoji()) {
+        this.selectedEmoji.set(this.emojis()[0].id);
+      }
+    });
+  }
+
+  ngOnInit(): void {
+    setLogLevel('debug');
+    this.initializeFirebase();
+  }
+
+  ngOnDestroy(): void {
+    if (this.unsubscribeEmojis) {
+      this.unsubscribeEmojis();
+    }
+    if (this.unsubscribePlayer) {
+      this.unsubscribePlayer();
+    }
+    if (this.priceUpdateInterval) {
+      clearInterval(this.priceUpdateInterval);
+    }
+  }
+
+  private initializeFirebase(): void {
+    try {
+      const app = initializeApp(JSON.parse(__firebase_config));
+      this.db.set(getFirestore(app));
+      this.auth.set(getAuth(app));
+
+      onAuthStateChanged(this.auth(), async (user) => {
+        if (user) {
+          this.userId.set(user.uid);
+          await this.initializeGameData();
+          this.listenToGameData();
+          this.startPriceUpdates();
+        } else if (typeof __initial_auth_token !== 'undefined') {
+          await signInWithCustomToken(this.auth(), __initial_auth_token);
+        } else {
+          await signInAnonymously(this.auth());
+        }
+      });
+    } catch (error) {
+      console.error("Firebase initialization error:", error);
+      this.showMessage("Initialization Error", "Failed to connect to the game server. Please refresh the page.", false);
+    }
+  }
+
+  private async initializeGameData(): Promise<void> {
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const emojisCollectionRef = collection(this.db(), 'artifacts', appId, 'public', 'data', 'emojis');
+    const playersCollectionRef = collection(this.db(), 'artifacts', appId, 'users', this.userId()!, 'playerData');
+    
+    // Most popular emojis in messaging, assigned starting prices and volatility
+    const emojiData = [
+      { id: 'em-cry', symbol: '😭', name: 'Loudly Crying Face', price: 100.00, volatility: 0.05 },
+      { id: 'em-laugh', symbol: '😂', name: 'Face with Tears of Joy', price: 95.00, volatility: 0.06 },
+      { id: 'em-heart', symbol: '❤️', name: 'Red Heart', price: 80.00, volatility: 0.08 },
+      { id: 'em-fire', symbol: '🔥', name: 'Fire', price: 65.00, volatility: 0.12 },
+      { id: 'em-sparkles', symbol: '✨', name: 'Sparkles', price: 50.00, volatility: 0.15 },
+      { id: 'em-rofl', symbol: '🤣', name: 'Rolling on the Floor Laughing', price: 45.00, volatility: 0.18 },
+      { id: 'em-hands', symbol: '🙏', name: 'Folded Hands', price: 30.00, volatility: 0.20 },
+      { id: 'em-thinking', symbol: '🤔', name: 'Thinking Face', price: 20.00, volatility: 0.25 },
+      { id: 'em-thumbsup', symbol: '👍', name: 'Thumbs Up', price: 15.00, volatility: 0.30 },
+      { id: 'em-rocket', symbol: '🚀', name: 'Rocket', price: 10.00, volatility: 0.40 }
+    ];
+
+    const batch = writeBatch(this.db());
+    emojiData.forEach(emoji => {
+      const docRef = doc(emojisCollectionRef, emoji.id);
+      batch.set(docRef, { 
+        symbol: emoji.symbol, 
+        name: emoji.name, 
+        price: emoji.price, 
+        volatility: emoji.volatility,
+        priceChange: 0,
+      });
+    });
+    
+    // Check if emojis collection is populated to avoid overwriting on refresh
+    const emojisSnapshot = await getDocs(emojisCollectionRef);
+    if (emojisSnapshot.empty) {
+      await batch.commit();
+    }
+
+    // Initialize player data if it doesn't exist
+    const playerDocRef = doc(playersCollectionRef, 'profile');
+    const playerDoc = await getDocs(playersCollectionRef);
+    if (playerDoc.empty) {
+      await setDoc(playerDocRef, { balance: 100.00, portfolio: {} });
+    }
+  }
+
+  private listenToGameData(): void {
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const emojisCollectionRef = collection(this.db(), 'artifacts', appId, 'public', 'data', 'emojis');
+    const playerDocRef = doc(this.db(), 'artifacts', appId, 'users', this.userId()!, 'playerData', 'profile');
+
+    this.unsubscribeEmojis = onSnapshot(emojisCollectionRef, (snapshot) => {
+      const newEmojis = snapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data(),
+      }));
+      this.emojis.set(newEmojis);
+    }, (error) => {
+      console.error("Error listening to emojis:", error);
+    });
+
+    this.unsubscribePlayer = onSnapshot(playerDocRef, (doc) => {
+      if (doc.exists()) {
+        this.playerData.set(doc.data());
+      }
+    }, (error) => {
+      console.error("Error listening to player data:", error);
+    });
+  }
+
+  private startPriceUpdates(): void {
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    this.priceUpdateInterval = setInterval(async () => {
+      if (!this.db()) return;
+      const emojisCollectionRef = collection(this.db(), 'artifacts', appId, 'public', 'data', 'emojis');
+      const emojisSnapshot = await getDocs(emojisCollectionRef);
+
+      const batch = writeBatch(this.db());
+
+      emojisSnapshot.docs.forEach(d => {
+        const data = d.data();
+        const currentPrice = data['price'];
+        const volatility = data['volatility'];
+        
+        const change = (Math.random() - 0.5) * currentPrice * volatility;
+        const newPrice = Math.max(0.1, currentPrice + change);
+        const priceChange = newPrice - currentPrice;
+        
+        const docRef = doc(emojisCollectionRef, d.id);
+        batch.update(docRef, { price: newPrice, priceChange: priceChange });
+      });
+
+      try {
+        await batch.commit();
+      } catch(e) {
+        console.error("Batch commit failed:", e);
+      }
+    }, 5000); // Update prices every 5 seconds
+  }
+
+  async buyEmoji(): Promise<void> {
+    const playerId = this.userId();
+    const db = this.db();
+    const selectedEmojiId = this.selectedEmoji();
+    const quantity = this.tradeQuantity();
+    const playerData = this.playerData();
+    const emojis = this.emojis();
+
+    if (!playerId || !db || !selectedEmojiId || quantity <= 0 || !playerData || !emojis) {
+      this.showMessage("Error", "Invalid trade data. Please check your inputs.", false);
+      return;
+    }
+
+    const emojiData = emojis.find(e => e.id === selectedEmojiId);
+    if (!emojiData) {
+      this.showMessage("Error", "Selected emoji not found.", false);
+      return;
+    }
+
+    const totalCost = emojiData.price * quantity;
+    if (playerData.balance < totalCost) {
+      this.showMessage("Failed", "Not enough money to buy this emoji.", false);
+      return;
+    }
+
+    try {
+      const playerDocRef = doc(db, 'artifacts', __app_id, 'users', playerId, 'playerData', 'profile');
+      const updatedBalance = playerData.balance - totalCost;
+      const updatedPortfolio = { ...playerData.portfolio, [selectedEmojiId]: (playerData.portfolio[selectedEmojiId] || 0) + quantity };
+      
+      await setDoc(playerDocRef, { balance: updatedBalance, portfolio: updatedPortfolio }, { merge: true });
+      this.showMessage("Success!", `You bought ${quantity} of ${emojiData.name} for $${totalCost.toFixed(2)}.`, false);
+    } catch (e) {
+      console.error("Error buying emoji:", e);
+      this.showMessage("Error", "Failed to complete the purchase.", false);
+    }
+  }
+
+  async sellEmoji(): Promise<void> {
+    const playerId = this.userId();
+    const db = this.db();
+    const selectedEmojiId = this.selectedEmoji();
+    const quantity = this.tradeQuantity();
+    const playerData = this.playerData();
+    const emojis = this.emojis();
+
+    if (!playerId || !db || !selectedEmojiId || quantity <= 0 || !playerData || !emojis) {
+      this.showMessage("Error", "Invalid trade data. Please check your inputs.", false);
+      return;
+    }
+
+    const emojiData = emojis.find(e => e.id === selectedEmojiId);
+    const ownedQuantity = playerData.portfolio[selectedEmojiId] || 0;
+
+    if (ownedQuantity < quantity) {
+      this.showMessage("Failed", "You do not own enough of this emoji to sell.", false);
+      return;
+    }
+
+    try {
+      const playerDocRef = doc(db, 'artifacts', __app_id, 'users', playerId, 'playerData', 'profile');
+      const totalRevenue = emojiData.price * quantity;
+      const updatedBalance = playerData.balance + totalRevenue;
+      const updatedPortfolio = { ...playerData.portfolio, [selectedEmojiId]: ownedQuantity - quantity };
+
+      await setDoc(playerDocRef, { balance: updatedBalance, portfolio: updatedPortfolio }, { merge: true });
+      this.showMessage("Success!", `You sold ${quantity} of ${emojiData.name} for $${totalRevenue.toFixed(2)}.`, false);
+    } catch (e) {
+      console.error("Error selling emoji:", e);
+      this.showMessage("Error", "Failed to complete the sale.", false);
+    }
+  }
+
+  watchAd(): void {
+    const REWARD = 50.00;
+    const playerDocRef = doc(this.db(), 'artifacts', __app_id, 'users', this.userId()!, 'playerData', 'profile');
+    
+    // Simulate an ad reward by adding a fixed amount of currency
+    updateDoc(playerDocRef, { balance: this.playerData().balance + REWARD })
+      .then(() => {
+        this.showMessage("Ad Reward!", `You earned $${REWARD.toFixed(2)} from watching an ad!`, false);
+      })
+      .catch(e => {
+        console.error("Error rewarding player:", e);
+        this.showMessage("Error", "Failed to get ad reward.", false);
+      });
+  }
+
+  showMessage(title: string, text: string, isTrade: boolean): void {
+    this.messageBox.set({ visible: true, title, text });
+  }
+
+  hideMessage(): void {
+    this.messageBox.set({ ...this.messageBox(), visible: false });
+  }
+}
